@@ -80,7 +80,7 @@
         // --- DOM Elements ---
         let raceIdInput, loadRaceBtn, newRaceBtn, raceInfoDiv, raceTimerContainer, messageBox;
         let riderForm, ridersTableBody, resultsTableBody, riderCountDisplay, stageCountInput;
-        let activeTimersList, exportCsvBtn, timingStationsContainer;
+        let exportCsvBtn, timingStationsContainer;
 
         // --- Auth Listener ---
         onAuthStateChanged(auth, async (user) => {
@@ -114,13 +114,18 @@
             const raceDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'races', raceId);
             onSnapshot(raceDocRef, (docSnap) => {
                 if (docSnap.exists()) {
-                    raceData = docSnap.data();
+                    const newRaceData = docSnap.data();
+                    const stagesChanged = raceData.stages !== newRaceData.stages;
+                    raceData = newRaceData;
                     renderRaceData();
-                    renderTimingStations();
+                    if (stagesChanged) {
+                        renderTimingStations(); 
+                    }
                 } else {
                     console.log("No such document! Creating a new one.");
                     raceData = { riders: [], stages: raceData.stages, raceId: raceId };
                     setDoc(raceDocRef, raceData);
+                    renderTimingStations();
                 }
             }, (error) => console.error("Error listening for real-time updates: ", error));
             setupTimersListener(raceId);
@@ -138,31 +143,47 @@
         };
 
         const renderActiveTimers = () => {
-            if (!activeTimersList) return;
-            activeTimersList.innerHTML = '';
-            const timerKeys = Object.keys(activeTimers).sort((a,b) => activeTimers[a].stageIndex - activeTimers[b].stageIndex);
-
-            if (timerKeys.length === 0) {
-                activeTimersList.innerHTML = `<li class="text-sm text-gray-500">No active timers.</li>`;
-            } else {
-                timerKeys.forEach(key => {
-                    const timer = activeTimers[key];
-                    const elapsed = Math.floor((Date.now() - timer.startTime) / 1000);
-                    const timeString = formatTime(elapsed);
-                    
-                    const rider = raceData.riders.find(r => r.number === timer.riderNumber);
-                    const riderName = rider ? `(${rider.name})` : '';
-
-                    const listItem = document.createElement('li');
-                    listItem.className = "flex justify-between items-center p-2 bg-gray-100 rounded-md shadow-sm";
-                    listItem.innerHTML = `
-                        <span>Rider #${timer.riderNumber} ${riderName} - Stage ${timer.stageIndex + 1}: ${timeString}</span>
-                        <button class="stop-btn button px-3 py-1 bg-red-600 text-white text-sm font-bold rounded-md shadow-sm hover:bg-red-700">Stop</button>
-                    `;
-                    listItem.querySelector('.stop-btn').onclick = () => stopSpecificTimer(timer.riderNumber, timer.stageIndex);
-                    activeTimersList.appendChild(listItem);
-                });
+            // Clear all existing timer lists within each stage panel
+            for (let i = 0; i < raceData.stages; i++) {
+                const list = document.getElementById(`active-timers-list-stage-${i}`);
+                if (list) {
+                    list.innerHTML = `<li class="text-sm text-gray-500">No active timers for this stage.</li>`;
+                }
             }
+
+            // Group timers by stage
+            const timersByStage = {};
+            Object.values(activeTimers).forEach(timer => {
+                if (!timersByStage[timer.stageIndex]) {
+                    timersByStage[timer.stageIndex] = [];
+                }
+                timersByStage[timer.stageIndex].push(timer);
+            });
+
+            // Render timers into their respective stage panels
+            Object.keys(timersByStage).forEach(stageIndex => {
+                const stageTimers = timersByStage[stageIndex];
+                const list = document.getElementById(`active-timers-list-stage-${stageIndex}`);
+                
+                if (list) {
+                    list.innerHTML = ''; // Clear the "no timers" message
+                    stageTimers.sort((a,b) => a.startTime - b.startTime).forEach(timer => {
+                        const elapsed = Math.floor((Date.now() - timer.startTime) / 1000);
+                        const timeString = formatTime(elapsed);
+                        const rider = raceData.riders.find(r => r.number === timer.riderNumber);
+                        const riderName = rider ? `(${rider.name})` : '';
+
+                        const listItem = document.createElement('li');
+                        listItem.className = "flex justify-between items-center p-2 bg-gray-100 rounded-md shadow-sm";
+                        listItem.innerHTML = `
+                            <span>Rider #${timer.riderNumber} ${riderName}: ${timeString}</span>
+                            <button class="stop-btn button px-3 py-1 bg-red-600 text-white text-sm font-bold rounded-md shadow-sm hover:bg-red-700">Stop</button>
+                        `;
+                        listItem.querySelector('.stop-btn').onclick = () => stopSpecificTimer(timer.riderNumber, timer.stageIndex);
+                        list.appendChild(listItem);
+                    });
+                }
+            });
         };
 
         const stopSpecificTimer = async (riderNumber, stageIndex) => {
@@ -328,7 +349,10 @@
                 summary.innerHTML = `<span>Stage ${i + 1} Timing</span><svg class="w-6 h-6 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>`;
 
                 const content = document.createElement('div');
-                content.className = 'p-4 border-t border-gray-200 flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4 w-full';
+                content.className = 'p-4 border-t border-gray-200';
+                
+                const startControls = document.createElement('div');
+                startControls.className = 'flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4 w-full';
 
                 const riderSelect = document.createElement('select');
                 riderSelect.id = `timingRiderInput-${i}`;
@@ -344,10 +368,24 @@
                 startButton.textContent = `Start Stage ${i + 1}`;
                 startButton.onclick = () => startTimer(i);
 
-                content.appendChild(riderSelect);
-                content.appendChild(startButton);
+                startControls.appendChild(riderSelect);
+                startControls.appendChild(startButton);
+                content.appendChild(startControls);
+                
+                const activeTimersForStageContainer = document.createElement('div');
+                activeTimersForStageContainer.id = `stage-timers-container-${i}`;
+                activeTimersForStageContainer.className = 'mt-4 pt-4 border-t border-gray-200';
+
+                const timersList = document.createElement('ul');
+                timersList.id = `active-timers-list-stage-${i}`;
+                timersList.className = 'space-y-2';
+                timersList.innerHTML = `<li class="text-sm text-gray-500">No active timers for this stage.</li>`;
+                
+                activeTimersForStageContainer.appendChild(timersList);
+
                 station.appendChild(summary);
                 station.appendChild(content);
+                station.appendChild(activeTimersForStageContainer);
 
                 timingStationsContainer.appendChild(station);
             }
@@ -419,7 +457,6 @@
             resultsTableBody = document.getElementById('resultsTableBody');
             riderCountDisplay = document.getElementById('riderCountDisplay');
             messageBox = document.getElementById('messageBox');
-            activeTimersList = document.getElementById('activeTimersList');
             stageCountInput = document.getElementById('stageCountInput');
             exportCsvBtn = document.getElementById('exportCsvBtn');
             timingStationsContainer = document.getElementById('timingStationsContainer');
@@ -432,7 +469,6 @@
             riderForm.addEventListener('submit', addRider);
             exportCsvBtn.addEventListener('click', exportResultsToCsv);
 
-            // CORRECTED: This listener is now inside DOMContentLoaded
             ridersTableBody.addEventListener('click', (event) => {
                 const cell = event.target.closest('td');
                 if (!cell || !cell.dataset.riderNumber) return;
@@ -489,13 +525,6 @@
                 <h2 class="text-2xl font-bold text-gray-800 mb-4">Timing Control Panel</h2>
                 <div id="timingStationsContainer" class="space-y-4 mb-8">
                     </div>
-
-                <h2 class="text-2xl font-bold text-gray-800 mb-4">Active Timers</h2>
-                <div class="card p-4 mb-8">
-                    <ul id="activeTimersList" class="space-y-2">
-                        <li class="text-sm text-gray-500">No active timers.</li>
-                    </ul>
-                </div>
 
                 <div class="flex justify-between items-center mb-4">
                     <h2 class="text-2xl font-bold text-gray-800">Add Riders</h2>
