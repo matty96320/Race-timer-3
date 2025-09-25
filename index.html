@@ -84,7 +84,6 @@
 </head>
 <body class="bg-gray-100 min-h-screen p-4 sm:p-8 flex flex-col items-center">
 
-    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -111,6 +110,7 @@
         let riderForm, ridersTableBody, resultsTableBody, riderCountDisplay;
         let startTimerBtn, timingRiderInput, messageBox, activeTimersList, stageCountInput, exportCsvBtn;
         let stageSelectionContainer, timingStationSelect, startTimingStationBtn, timingStationActive, timingStationHeader, switchStageBtn;
+        let stageStandingsHeader, stageStandingsBody, currentOverallStandingsBody;
 
 
         const showMessage = (message, isError = false) => {
@@ -178,13 +178,13 @@
                     const timeString = formatTime(elapsed);
                     
                     const rider = raceData.riders.find(r => r.number === timer.riderNumber);
-                    const riderName = rider ? `(${rider.name})` : '';
+                    const riderDetails = rider ? `(${rider.name}${rider.category ? ', ' + rider.category : ''})` : '';
 
                     const listItem = document.createElement('li');
                     listItem.className = "flex justify-between items-center p-2 bg-gray-100 rounded-md shadow-sm";
                     
                     const textNode = document.createElement('span');
-                    textNode.textContent = `Rider #${timer.riderNumber} ${riderName} : ${timeString}`;
+                    textNode.textContent = `Rider #${timer.riderNumber} ${riderDetails} : ${timeString}`;
                     
                     const stopButton = document.createElement('button');
                     stopButton.textContent = 'Stop';
@@ -227,7 +227,8 @@
             raceData.riders.forEach(rider => {
                 const option = document.createElement('option');
                 option.value = rider.number;
-                option.textContent = `${rider.number} - ${rider.name}`;
+                const categoryText = rider.category ? ` (${rider.category})` : '';
+                option.textContent = `${rider.number} - ${rider.name}${categoryText}`;
                 timingRiderInput.appendChild(option);
             });
             timingRiderInput.value = currentSelection;
@@ -263,6 +264,7 @@
 
             const riderNumber = parseInt(document.getElementById('riderNumber').value, 10);
             const riderName = document.getElementById('riderName').value.trim();
+            const riderCategory = document.getElementById('riderCategory').value.trim();
 
             if (raceData.riders.length >= 100) return showMessage('Maximum 100 riders.', true);
             if (!riderNumber || !riderName) return showMessage('Please enter both rider number and name.', true);
@@ -271,6 +273,7 @@
             const newRider = {
                 number: riderNumber,
                 name: riderName,
+                category: riderCategory,
                 times: Array(raceData.stages).fill(null),
                 totalTime: null,
                 status: 'active'
@@ -285,12 +288,15 @@
             showMessage('Rider added successfully!');
         };
         
-        const setRiderDnf = async (riderNumber) => {
+        const setRiderDnf = async (riderNumber, stageIndexToClear) => {
             const riderIndex = raceData.riders.findIndex(r => r.number === riderNumber);
             if (riderIndex !== -1) {
                 let updatedRiders = JSON.parse(JSON.stringify(raceData.riders));
                 updatedRiders[riderIndex].status = 'DNF';
                 updatedRiders[riderIndex].totalTime = null; 
+                if (typeof stageIndexToClear === 'number') {
+                    updatedRiders[riderIndex].times[stageIndexToClear] = null;
+                }
                 
                 const appId = typeof __app_id !== 'undefined' ? __app_id : 'enduro-timer-default';
                 const raceDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'races', currentRaceId);
@@ -345,9 +351,20 @@
         };
 
         const renderRaceData = () => {
+            if (!ridersTableBody || !resultsTableBody) return;
             ridersTableBody.innerHTML = '';
             resultsTableBody.innerHTML = '';
             
+            // --- Logic for Category Rankings ---
+            const categories = [...new Set(raceData.riders.map(r => r.category).filter(c => c))];
+            const categoryRankings = {};
+            categories.forEach(cat => {
+                categoryRankings[cat] = raceData.riders
+                    .filter(r => r.category === cat && r.totalTime !== null && r.status !== 'DNF')
+                    .sort((a, b) => a.totalTime - b.totalTime);
+            });
+
+            // --- Render Main Rider & Stage Times Table ---
             raceData.riders.forEach((rider) => {
                 const row = document.createElement('tr');
                 row.className = 'hover:bg-gray-50';
@@ -355,17 +372,25 @@
                 row.innerHTML = `
                     <td class="px-4 py-2 font-bold text-gray-700">${rider.number}</td>
                     <td class="px-4 py-2 text-gray-600">${rider.name}</td>
+                    <td class="px-4 py-2 text-gray-500">${rider.category || ''}</td>
                 `;
                 
                 for (let i = 0; i < raceData.stages; i++) {
                     const timeCell = document.createElement('td');
                     timeCell.className = 'px-4 py-2 text-gray-800 cursor-pointer hover:bg-yellow-200';
-                    timeCell.textContent = formatTime(rider.times[i]);
+                    
+                    if (rider.status === 'DNF' && rider.times[i] === null) {
+                        timeCell.textContent = 'DNF';
+                        timeCell.classList.add('text-red-600');
+                    } else {
+                        timeCell.textContent = formatTime(rider.times[i]);
+                    }
+
                     timeCell.addEventListener('click', () => {
                         const newTimeStr = prompt(`Enter new time for ${rider.name} - Stage ${i + 1} (e.g., 5:30 or DNF):`, rider.status === 'DNF' ? 'DNF' : formatTime(rider.times[i]));
                         if (newTimeStr !== null) {
                             if (newTimeStr.trim().toUpperCase() === 'DNF') {
-                                setRiderDnf(rider.number);
+                                setRiderDnf(rider.number, i);
                             } else {
                                 const newTimeInSeconds = parseTimeToSeconds(newTimeStr);
                                 if (newTimeInSeconds !== null) {
@@ -389,19 +414,21 @@
                 ridersTableBody.appendChild(row);
             });
             
+            // --- Logic for Main Overall Standings ---
             const finishedRiders = [...raceData.riders]
                 .filter(rider => rider.totalTime !== null && rider.status !== 'DNF')
                 .sort((a, b) => a.totalTime - b.totalTime);
-
             const incompleteRiders = raceData.riders.filter(rider => rider.totalTime === null && rider.status !== 'DNF');
-            
             const dnfRiders = raceData.riders.filter(rider => rider.status === 'DNF');
+            const allRidersRanked = [...finishedRiders, ...incompleteRiders, ...dnfRiders];
 
-            [...finishedRiders, ...incompleteRiders, ...dnfRiders].forEach((rider) => {
+            // --- Render Main "Current Standings" Table ---
+            allRidersRanked.forEach((rider) => {
                 const row = document.createElement('tr');
                 row.className = 'hover:bg-gray-50';
                 
-                let rank, totalTimeDisplay;
+                let rank, totalTimeDisplay, categoryRank = 'N/A';
+
                 if (rider.status === 'DNF') {
                     rank = 'DNF';
                     totalTimeDisplay = 'DNF';
@@ -409,6 +436,10 @@
                 } else if (rider.totalTime !== null) {
                     rank = finishedRiders.findIndex(r => r.number === rider.number) + 1;
                     totalTimeDisplay = formatTime(rider.totalTime);
+                    if (rider.category && categoryRankings[rider.category]) {
+                        const rankIndex = categoryRankings[rider.category].findIndex(r => r.number === rider.number);
+                        if(rankIndex !== -1) categoryRank = rankIndex + 1;
+                    }
                 } else {
                     rank = 'N/A';
                     totalTimeDisplay = 'N/A';
@@ -416,8 +447,10 @@
 
                 row.innerHTML = `
                     <td class="px-4 py-2 text-center font-bold text-lg">${rank}</td>
+                    <td class="px-4 py-2 text-center font-semibold text-md">${categoryRank}</td>
                     <td class="px-4 py-2">${rider.number}</td>
                     <td class="px-4 py-2">${rider.name}</td>
+                    <td class="px-4 py-2 text-gray-500">${rider.category || ''}</td>
                     <td class="px-4 py-2 font-semibold">${totalTimeDisplay}</td>
                 `;
                 resultsTableBody.appendChild(row);
@@ -425,6 +458,7 @@
             
             riderCountDisplay.textContent = `Riders: ${raceData.riders.length}/100`;
             renderStageHeaders();
+            renderStageSpecificResults(allRidersRanked, categoryRankings);
         };
 
         const renderStageHeaders = () => {
@@ -432,9 +466,74 @@
             ridersTableHeader.innerHTML = `
                 <th class="px-4 py-3">Rider #</th>
                 <th class="px-4 py-3">Name</th>
+                <th class="px-4 py-3">Category</th>
                 ${Array.from({ length: raceData.stages }, (_, i) => `<th class="px-4 py-3">Stage ${i + 1}</th>`).join('')}
                 <th class="px-4 py-3">Total Time</th>
             `;
+        };
+        
+        const renderStageSpecificResults = (allRidersRanked, categoryRankings) => {
+            if (currentTimingStage === null || !stageStandingsBody || !currentOverallStandingsBody) return;
+            
+            stageStandingsBody.innerHTML = '';
+            currentOverallStandingsBody.innerHTML = '';
+
+            // --- Render Stage-Specific Standings ---
+            const stageIndex = currentTimingStage;
+            const ridersWithStageTime = raceData.riders
+                .filter(r => typeof r.times[stageIndex] === 'number' && r.status !== 'DNF')
+                .sort((a, b) => a.times[stageIndex] - b.times[stageIndex]);
+            
+            const otherRiders = raceData.riders.filter(r => typeof r.times[stageIndex] !== 'number' || r.status === 'DNF');
+
+            [...ridersWithStageTime, ...otherRiders].forEach((rider, index) => {
+                 const row = document.createElement('tr');
+                 const rank = (index < ridersWithStageTime.length) ? index + 1 : 'N/A';
+                 const time = formatTime(rider.times[stageIndex]);
+                 
+                 if(rider.status === 'DNF') row.classList.add('text-red-600', 'opacity-75');
+
+                 row.innerHTML = `
+                    <td class="px-2 py-2 text-center font-bold">${rank}</td>
+                    <td class="px-2 py-2">${rider.number}</td>
+                    <td class="px-2 py-2">${rider.name}</td>
+                    <td class="px-2 py-2 font-semibold">${rider.status === 'DNF' ? 'DNF' : time}</td>
+                 `;
+                 stageStandingsBody.appendChild(row);
+            });
+
+
+            // --- Render Current Overall Standings (on stage page) ---
+            const finishedRiders = allRidersRanked.filter(r => r.totalTime !== null && r.status !== 'DNF');
+            allRidersRanked.forEach(rider => {
+                 const row = document.createElement('tr');
+                 let rank, totalTimeDisplay, categoryRank = 'N/A';
+
+                 if (rider.status === 'DNF') {
+                    rank = 'DNF';
+                    totalTimeDisplay = 'DNF';
+                    row.classList.add('text-red-600', 'opacity-75');
+                 } else if (rider.totalTime !== null) {
+                    rank = finishedRiders.findIndex(r => r.number === rider.number) + 1;
+                    totalTimeDisplay = formatTime(rider.totalTime);
+                    if (rider.category && categoryRankings[rider.category]) {
+                        const rankIndex = categoryRankings[rider.category].findIndex(r => r.number === rider.number);
+                        if (rankIndex !== -1) categoryRank = rankIndex + 1;
+                    }
+                 } else {
+                    rank = 'N/A';
+                    totalTimeDisplay = 'N/A';
+                 }
+
+                 row.innerHTML = `
+                    <td class="px-2 py-2 text-center font-bold">${rank}</td>
+                    <td class="px-2 py-2 text-center">${categoryRank}</td>
+                    <td class="px-2 py-2">${rider.number}</td>
+                    <td class="px-2 py-2">${rider.name}</td>
+                    <td class="px-2 py-2 font-semibold">${totalTimeDisplay}</td>
+                 `;
+                 currentOverallStandingsBody.appendChild(row);
+            });
         };
 
         const startTimer = async () => {
@@ -488,11 +587,15 @@
             stageSelectionContainer.classList.add('hidden');
             timingStationActive.classList.remove('hidden');
             timingStationHeader.textContent = `Live Timing for Stage ${currentTimingStage + 1}`;
+            stageStandingsHeader.textContent = `Stage ${currentTimingStage + 1} Standings`;
             renderActiveTimers();
+            renderRaceData(); // Will trigger re-render of stage-specific tables
         };
 
         const switchTimingStage = () => {
             currentTimingStage = null;
+            if(stageStandingsBody) stageStandingsBody.innerHTML = '';
+            if(currentOverallStandingsBody) currentOverallStandingsBody.innerHTML = '';
             showStageSelection();
         };
 
@@ -506,20 +609,26 @@
                 .filter(rider => rider.totalTime !== null && rider.status !== 'DNF')
                 .sort((a, b) => a.totalTime - b.totalTime);
             
+            const categories = [...new Set(raceData.riders.map(r => r.category).filter(c => c))];
+            const categoryRankings = {};
+            categories.forEach(cat => {
+                categoryRankings[cat] = raceData.riders
+                    .filter(r => r.category === cat && r.totalTime !== null && r.status !== 'DNF')
+                    .sort((a, b) => a.totalTime - b.totalTime);
+            });
+
             const incompleteRiders = raceData.riders.filter(rider => rider.totalTime === null && rider.status !== 'DNF');
-
             const dnfRiders = raceData.riders.filter(rider => rider.status === 'DNF');
-
             const allRidersRanked = [...finishedRiders, ...incompleteRiders, ...dnfRiders];
 
-            const headers = ["Rank", "Rider #", "Name", "Total Time"];
+            const headers = ["Overall Rank", "Category Rank", "Rider #", "Name", "Category", "Total Time"];
             for (let i = 0; i < raceData.stages; i++) {
                 headers.push(`Stage ${i + 1}`);
             }
             let csvContent = headers.join(",") + "\r\n";
 
             allRidersRanked.forEach((rider) => {
-                let rank, totalTime;
+                let rank, totalTime, categoryRank = 'N/A';
 
                 if (rider.status === 'DNF') {
                     rank = 'DNF';
@@ -527,13 +636,18 @@
                 } else if (rider.totalTime !== null) {
                     rank = finishedRiders.findIndex(r => r.number === rider.number) + 1;
                     totalTime = formatTime(rider.totalTime);
+                    if (rider.category && categoryRankings[rider.category]) {
+                        const rankIndex = categoryRankings[rider.category].findIndex(r => r.number === rider.number);
+                        if(rankIndex !== -1) categoryRank = rankIndex + 1;
+                    }
                 } else {
                     rank = 'N/A';
                     totalTime = 'N/A';
                 }
 
                 const name = `"${rider.name.replace(/"/g, '""')}"`;
-                const rowData = [rank, rider.number, name, totalTime];
+                const category = `"${(rider.category || '').replace(/"/g, '""')}"`;
+                const rowData = [rank, categoryRank, rider.number, name, category, totalTime];
                 rider.times.forEach(time => {
                     rowData.push(formatTime(time));
                 });
@@ -574,39 +688,22 @@
             timingStationActive = document.getElementById('timingStationActive');
             timingStationHeader = document.getElementById('timingStationHeader');
             switchStageBtn = document.getElementById('switchStageBtn');
+            stageStandingsHeader = document.getElementById('stageStandingsHeader');
+            stageStandingsBody = document.getElementById('stageStandingsBody');
+            currentOverallStandingsBody = document.getElementById('currentOverallStandingsBody');
             
             stageCountInput.value = 6;
             
             // --- Firebase Initialization ---
-            // This setup allows the app to work both locally (with pasted config) 
-            // and in an environment where config is provided globally.
-
-            // ===================================================================
-            // PASTE YOUR FIREBASE CONFIGURATION OBJECT HERE FOR LOCAL TESTING
-            // ===================================================================
             const manualFirebaseConfig = {
-        
-  apiKey: "AIzaSyCrKQpx3rZN2Y0Asy8HL08kv89eVQhoDck",
-  authDomain: "race-timer-6b61e.firebaseapp.com",
-  projectId: "race-timer-6b61e",
-  storageBucket: "race-timer-6b61e.firebasestorage.app",
-  messagingSenderId: "933028970429",
-  appId: "1:933028970429:web:2c3a5a02c2d6682bde5cd4",
-  measurementId: "G-D54Y5VYDT6"
-};
-        
-            // ===================================================================
-
-            const firebaseConfig = {
-  apiKey: "AIzaSyCrKQpx3rZN2Y0Asy8HL08kv89eVQhoDck",
-  authDomain: "race-timer-6b61e.firebaseapp.com",
-  projectId: "race-timer-6b61e",
-  storageBucket: "race-timer-6b61e.firebasestorage.app",
-  messagingSenderId: "933028970429",
-  appId: "1:933028970429:web:2c3a5a02c2d6682bde5cd4",
-  measurementId: "G-D54Y5VYDT6"
-};
-                
+                apiKey: "YOUR_API_KEY",
+                authDomain: "YOUR_AUTH_DOMAIN",
+                projectId: "YOUR_PROJECT_ID",
+                storageBucket: "YOUR_STORAGE_BUCKET",
+                messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+                appId: "YOUR_APP_ID"
+            };
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : manualFirebaseConfig;
             const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'enduro-timer-default';
 
@@ -654,7 +751,6 @@
         });
     </script>
 
-    <!-- UI -->
     <div class="container mx-auto p-4 flex flex-col items-center w-full">
         <header class="header-bg text-white w-full p-6 sm:p-8 rounded-xl text-center shadow-lg mb-8">
             <h1 class="text-3xl sm:text-4xl font-extrabold mb-2">Enduro Race Timer</h1>
@@ -709,9 +805,7 @@
 
                     <h3 class="text-xl font-bold text-gray-800 mb-4">Active Timers For This Stage</h3>
                     <div class="card p-4 mb-8">
-                        <ul id="activeTimersList" class="space-y-2">
-                            <!-- Stage-specific active timers go here -->
-                        </ul>
+                        <ul id="activeTimersList" class="space-y-2"></ul>
                     </div>
 
                     <div class="flex justify-between items-center mb-4">
@@ -719,12 +813,51 @@
                         <span id="riderCountDisplay" class="text-sm text-gray-500 font-medium">Riders: 0/100</span>
                     </div>
                     <form id="riderForm" class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
-                        <input type="number" id="riderNumber" placeholder="Rider Number" required
-                               class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                        <input type="text" id="riderName" placeholder="Rider Name" required
-                               class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <input type="number" id="riderNumber" placeholder="Rider Number" required class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <input type="text" id="riderName" placeholder="Rider Name" required class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <input type="text" id="riderCategory" placeholder="Category (Optional)" class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
                         <button type="submit" class="button w-full sm:w-auto px-6 py-2 bg-emerald-600 text-white font-bold rounded-md shadow-md hover:bg-emerald-700">Add Rider</button>
                     </form>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
+                        <div>
+                            <h3 id="stageStandingsHeader" class="text-xl font-bold text-gray-800 mb-4"></h3>
+                            <div class="card p-0 overflow-hidden">
+                                <div class="overflow-x-auto">
+                                    <table class="w-full text-sm">
+                                        <thead>
+                                            <tr>
+                                                <th class="px-2 py-3 text-center">Rank</th>
+                                                <th class="px-2 py-3">Rider #</th>
+                                                <th class="px-2 py-3">Name</th>
+                                                <th class="px-2 py-3">Stage Time</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="stageStandingsBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                             <h3 class="text-xl font-bold text-gray-800 mb-4">Current Overall Standings</h3>
+                             <div class="card p-0 overflow-hidden">
+                                <div class="overflow-x-auto">
+                                    <table class="w-full text-sm">
+                                        <thead>
+                                            <tr>
+                                                <th class="px-2 py-3 text-center">Ovr</th>
+                                                <th class="px-2 py-3 text-center">Cat</th>
+                                                <th class="px-2 py-3">#</th>
+                                                <th class="px-2 py-3">Name</th>
+                                                <th class="px-2 py-3">Total</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="currentOverallStandingsBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -736,12 +869,9 @@
                     <table class="w-full">
                         <thead>
                             <tr>
-                                <!-- Headers generated by JS -->
-                            </tr>
+                                </tr>
                         </thead>
-                        <tbody id="ridersTableBody">
-                            <!-- Rider data will be populated here -->
-                        </tbody>
+                        <tbody id="ridersTableBody"></tbody>
                     </table>
                 </div>
             </div>
@@ -752,18 +882,18 @@
                     <button id="exportCsvBtn" class="button px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded-md shadow-md hover:bg-blue-700">Export to CSV</button>
                 </div>
                 <div class="overflow-x-auto">
-                    <table class="w-full min-w-[500px]">
+                    <table class="w-full min-w-[600px]">
                         <thead>
                             <tr>
-                                <th class="px-4 py-3 text-center">Rank</th>
+                                <th class="px-4 py-3 text-center">Overall Rank</th>
+                                <th class="px-4 py-3 text-center">Cat. Rank</th>
                                 <th class="px-4 py-3">Rider #</th>
                                 <th class="px-4 py-3">Name</th>
+                                <th class="px-4 py-3">Category</th>
                                 <th class="px-4 py-3">Total Time</th>
                             </tr>
                         </thead>
-                        <tbody id="resultsTableBody">
-                            <!-- Results will be populated here -->
-                        </tbody>
+                        <tbody id="resultsTableBody"></tbody>
                     </table>
                 </div>
             </div>
@@ -771,5 +901,3 @@
     </div>
 </body>
 </html>
-
-
