@@ -86,15 +86,17 @@
         let app, db, auth;
 
         // --- Global State ---
-        let raceData = { riders: [], stages: 0 };
+        let raceData = { riders: [], stages: 0, categories: [] }; // Added categories
         let raceUnsubscribe = null;
         let userId = null, currentRaceId = null, appId = 'enduro-timer-default';
+        const MAX_RIDERS = 250; // --- RIDER LIMIT ---
         
         // --- DOM Elements ---
         let raceSearchDiv, raceIdInput, findRaceBtn;
         let racePortalDiv, raceNameDisplay, raceIdDisplay, riderCountDisplay;
         let signUpForm, resultsTableBody, messageBox;
-        let tabButtons, tabContents; // Added for tabs
+        let tabButtons, tabContents; 
+        let riderCategorySelect; // --- New ---
 
         const showMessage = (message, isError = false) => {
             if (!messageBox) return;
@@ -105,7 +107,7 @@
             setTimeout(() => {
                 messageBox.classList.remove('opacity-100', 'scale-100');
                 messageBox.classList.add('opacity-0', 'scale-95');
-            }, 4000); // Increased time for success message
+            }, 4000); 
         };
 
         const formatTime = (seconds) => {
@@ -123,7 +125,6 @@
             return { stagesCompleted: completedTimes.length, provisionalTime: completedTimes.reduce((a, b) => a + b, 0) };
         };
 
-        // --- New Tab Function ---
         const setupTabs = () => {
             tabButtons = document.querySelectorAll('.tab-button');
             tabContents = document.querySelectorAll('.tab-content');
@@ -141,8 +142,21 @@
                     }
                 });
             });
-            // Click the first tab by default
             if(tabButtons.length > 0) tabButtons[0].click();
+        };
+
+        // --- New: Populate Public Category Dropdown ---
+        const populatePublicCategoryDropdown = () => {
+            if (!riderCategorySelect) return;
+            riderCategorySelect.innerHTML = '<option value="">-- No Category --</option>';
+            if (raceData.categories) {
+                raceData.categories.forEach(category => {
+                    const option = document.createElement('option');
+                    option.value = category;
+                    option.textContent = category;
+                    riderCategorySelect.appendChild(option);
+                });
+            }
         };
 
         const setupResultsListener = (raceId) => {
@@ -153,10 +167,12 @@
             raceUnsubscribe = onSnapshot(raceDocRef, (docSnap) => {
                 if (docSnap.exists()) {
                     raceData = docSnap.data();
+                    if (!raceData.categories) raceData.categories = []; // Ensure categories array exists
                     raceNameDisplay.textContent = raceData.raceName || 'Race';
                     raceIdDisplay.textContent = `Race ID: ${raceId}`;
-                    riderCountDisplay.textContent = `Riders: ${raceData.riders.length}/100`;
+                    riderCountDisplay.textContent = `Riders: ${raceData.riders.length}/${MAX_RIDERS}`; // --- UPDATED LIMIT ---
                     renderResults();
+                    populatePublicCategoryDropdown(); // --- New call ---
                 } else {
                     showMessage('The race you were viewing seems to have been deleted.', true);
                     showSearch();
@@ -224,7 +240,7 @@
                     raceSearchDiv.classList.add('hidden');
                     racePortalDiv.classList.remove('hidden');
                     setupResultsListener(raceId);
-                    setupTabs(); // Initialize tabs after showing the portal
+                    setupTabs(); 
                 } else {
                     showMessage('Race not found. Please check the ID.', true);
                 }
@@ -237,25 +253,23 @@
         const showSearch = () => {
              if (raceUnsubscribe) raceUnsubscribe();
              currentRaceId = null;
-             raceData = { riders: [], stages: 0 };
+             raceData = { riders: [], stages: 0, categories: [] };
              raceSearchDiv.classList.remove('hidden');
              racePortalDiv.classList.add('hidden');
              raceIdInput.value = '';
         };
 
-        // --- Updated Sign Up Function ---
         const handleSignUp = async (event) => {
             event.preventDefault();
             if (!currentRaceId) return showMessage('No race loaded.', true);
 
-            // const riderNumber = parseInt(document.getElementById('riderNumber').value, 10); // <-- REMOVED
             const riderName = document.getElementById('riderName').value.trim();
-            const riderCategory = document.getElementById('riderCategory').value.trim();
+            const riderCategory = riderCategorySelect.value; // --- UPDATED ---
             
-            if (!riderName) return showMessage('Please enter your full name.', true); // <-- UPDATED VALIDATION
+            if (!riderName) return showMessage('Please enter your full name.', true); 
 
             const raceDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'races', currentRaceId);
-            let assignedRiderNumber = null; // To show in the success message
+            let assignedRiderNumber = null; 
 
             try {
                 await runTransaction(db, async (transaction) => {
@@ -266,23 +280,20 @@
                     const currentRiders = currentData.riders || [];
                     const currentStages = currentData.stages || 0;
 
-                    // --- NEW: Auto-assign number logic ---
                     let newRiderNumber = 1;
                     if (currentRiders.length > 0) {
                         const maxNumber = Math.max(...currentRiders.map(r => r.number));
                         newRiderNumber = maxNumber + 1;
                     }
-                    assignedRiderNumber = newRiderNumber; // Store for success message
-                    // --- END NEW LOGIC ---
+                    assignedRiderNumber = newRiderNumber; 
 
-                    // Re-run validation inside transaction
-                    if (currentRiders.length >= 100) throw "Race is full (100 rider limit).";
-                    // if (currentRiders.some(r => r.number === riderNumber)) throw `Rider number ${riderNumber} is already taken.`; // <-- REMOVED
-
+                    // --- UPDATED LIMIT CHECK ---
+                    if (currentRiders.length >= MAX_RIDERS) throw `Race is full (${MAX_RIDERS} rider limit).`;
+                    
                     const newRider = { 
-                        number: newRiderNumber, // <-- USE NEW NUMBER
+                        number: newRiderNumber, 
                         name: riderName, 
-                        category: riderCategory, 
+                        category: riderCategory, // --- UPDATED ---
                         times: Array(currentStages).fill(null),
                         totalTime: null, 
                         status: 'active' 
@@ -292,7 +303,6 @@
                     transaction.update(raceDocRef, { riders: updatedRiders });
                 });
 
-                // Show success message WITH the assigned number
                 showMessage(`Successfully signed up! Your rider number is #${assignedRiderNumber}.`, false);
                 signUpForm.reset();
             } catch (e) {
@@ -313,8 +323,9 @@
             signUpForm = document.getElementById('signUpForm');
             resultsTableBody = document.getElementById('resultsTableBody');
             messageBox = document.getElementById('messageBox');
+            riderCategorySelect = document.getElementById('riderCategorySelect'); // --- New ---
             
-            // --- Firebase Initialization (Same as main app) ---
+            // --- Firebase Initialization ---
             const manualFirebaseConfig = {
                 apiKey: "AIzaSyCrKQpx3rZN2Y0Asy8HL08kv89eVQhoDck",
                 authDomain: "race-timer-6b61e.firebaseapp.com",
@@ -387,8 +398,7 @@
                 <div class="card p-0 overflow-hidden">
                     <div class="flex justify-between items-center p-6 border-b border-gray-200">
                         <h2 class="text-2xl font-bold text-gray-800">Live Standings</h2>
-                        <span id="riderCountDisplay" class="text-sm text-gray-500 font-medium">Riders: 0/100</span>
-                    </div>
+                        <span id="riderCountDisplay" class="text-sm text-gray-500 font-medium">Riders: 0/250</span> </div>
                     <div class="overflow-x-auto">
                         <table class="w-full min-w-[600px]">
                             <thead><tr><th class="text-center">Overall Rank</th><th class="text-center">Cat. Rank</th><th>Rider #</th><th>Name</th><th>Category</th><th>Total Time / Provisional</th></tr></thead>
@@ -401,7 +411,8 @@
             </div>
 
             <div id="signupTab" class="tab-content hidden">
-                <div class="max-w-md mx-auto"> <div class="card">
+                <div class="max-w-md mx-auto"> 
+                    <div class="card">
                         <h2 class="text-2xl font-bold text-gray-800 mb-4">Sign Up for Race</h2>
                         <p class="text-sm text-gray-600 mb-4">Fill out your details below. Your rider number will be automatically assigned to you upon success.</p>
                         <form id="signUpForm" class="space-y-4">
@@ -410,15 +421,18 @@
                                 <input type="text" id="riderName" placeholder="e.g., Jane Doe" required class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
                             </div>
                             <div>
-                                <label for="riderCategory" class="block text-sm font-medium text-gray-700 mb-1">Category (Optional)</label>
-                                <input type="text" id="riderCategory" placeholder="e.g., Pro Women, U21 Men" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <label for="riderCategorySelect" class="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                                <select id="riderCategorySelect" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <option value="">-- Select Category --</option>
+                                </select>
                             </div>
                             <button type="submit" class="button w-full px-6 py-2 bg-emerald-600 text-white font-bold rounded-md shadow-md hover:bg-emerald-700">Sign Up & Get Number</button>
                         </form>
                     </div>
                 </div>
             </div>
-            </div>
+
+        </div>
     </div>
 </body>
 </html>
