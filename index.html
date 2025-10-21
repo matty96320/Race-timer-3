@@ -115,12 +115,12 @@
         let app, db, auth;
 
         // --- Global State ---
-        let raceData = { riders: [], stages: 6, categories: [] }; // Added categories
+        let raceData = { riders: [], stages: 6, categories: [] };
         let authReady = false;
         let raceUnsubscribe = null, timersUnsubscribe = null;
         let userId = null, currentRaceId = null, currentTimingStage = null;
         let activeTimers = {};
-        const MAX_RIDERS = 250; // --- RIDER LIMIT ---
+        const MAX_RIDERS = 250; 
         
         // --- DOM Elements ---
         let raceIdInput, loadRaceBtn, newRaceBtn, raceInfoDiv, raceTimerContainer;
@@ -131,8 +131,8 @@
         let riderCsvInput, processCsvBtn; 
         let toggleViewBtn, tabButtons, tabContents;
         let raceNameInput, currentRaceNameDisplay;
-        // --- New Category DOM Elements ---
         let categoryNameInput, addCategoryBtn, categoryListContainer, riderCategorySelect;
+        let editStageCountBtn; // --- New DOM Element ---
 
 
         const showMessage = (message, isError = false) => {
@@ -156,7 +156,7 @@
             raceUnsubscribe = onSnapshot(raceDocRef, (docSnap) => {
                 if (docSnap.exists()) {
                     raceData = docSnap.data();
-                    if (!raceData.categories) raceData.categories = []; // Ensure categories array exists
+                    if (!raceData.categories) raceData.categories = [];
                     currentRaceNameDisplay.textContent = raceData.raceName || 'Race'; 
                     if(currentTimingStage === null) {
                         showStageSelection();
@@ -170,7 +170,7 @@
                         stages: raceData.stages, 
                         raceId: raceId, 
                         raceName: newRaceName || 'Untitled Race',
-                        categories: [] // Add categories to new race
+                        categories: [] 
                     };
                     setDoc(raceDocRef, raceData);
                 }
@@ -255,7 +255,6 @@
             timingRiderInput.value = currentSelection;
         };
         
-        // --- New Function: Populate Category Dropdown ---
         const populateCategoryDropdowns = () => {
             if (!riderCategorySelect) return;
             const currentSelection = riderCategorySelect.value;
@@ -352,7 +351,7 @@
                     existingNumbers.add(riderNumber);
                 }
 
-                if (raceData.riders.length + newRiders.length > MAX_RIDERS) { // --- UPDATED LIMIT ---
+                if (raceData.riders.length + newRiders.length > MAX_RIDERS) {
                     return showMessage(`Cannot add ${newRiders.length} riders. The total would exceed the ${MAX_RIDERS} rider limit.`, true);
                 }
 
@@ -378,9 +377,9 @@
 
             const riderNumber = parseInt(document.getElementById('riderNumber').value, 10);
             const riderName = document.getElementById('riderName').value.trim();
-            const riderCategory = riderCategorySelect.value; // --- UPDATED ---
+            const riderCategory = riderCategorySelect.value; 
 
-            if (raceData.riders.length >= MAX_RIDERS) return showMessage(`Maximum ${MAX_RIDERS} riders.`, true); // --- UPDATED LIMIT ---
+            if (raceData.riders.length >= MAX_RIDERS) return showMessage(`Maximum ${MAX_RIDERS} riders.`, true);
             if (!riderNumber || !riderName) return showMessage('Please enter both rider number and name.', true);
             if (raceData.riders.some(r => r.number === riderNumber)) return showMessage('Rider number already exists.', true);
             
@@ -416,11 +415,18 @@
             if (riderIndex === -1) return;
             const rider = raceData.riders[riderIndex];
 
-            // Only prompt for Name and Category
             const newName = prompt("Enter new rider name:", rider.name);
-            if (newName === null) return; // User cancelled
-            const newCategory = prompt("Enter new rider category:", rider.category);
-            if (newCategory === null) return; // User cancelled
+            if (newName === null) return; 
+
+            // --- New Category Prompt ---
+            const categoryOptions = (raceData.categories && raceData.categories.length > 0) 
+                ? raceData.categories.join(', ') 
+                : 'No categories set';
+            const promptMessage = `Enter new rider category.\n\nAvailable options: [${categoryOptions}]`;
+            const newCategory = prompt(promptMessage, rider.category);
+            // --- End New Category Prompt ---
+            
+            if (newCategory === null) return; 
 
             if (!newName.trim()) return showMessage('Name cannot be empty.', true);
 
@@ -428,7 +434,6 @@
             updatedRiders[riderIndex].name = newName.trim();
             updatedRiders[riderIndex].category = newCategory.trim();
             
-            // If the new category doesn't exist in the master list, add it
             const updatedCategories = new Set(raceData.categories || []);
             if (newCategory.trim() && !updatedCategories.has(newCategory.trim())) {
                 updatedCategories.add(newCategory.trim());
@@ -439,7 +444,7 @@
             try {
                 await updateDoc(raceDocRef, { 
                     riders: updatedRiders,
-                    categories: Array.from(updatedCategories) // Save categories list too
+                    categories: Array.from(updatedCategories) 
                 });
                 showMessage(`Rider #${riderNumber} updated.`);
             } catch (error) {
@@ -448,7 +453,78 @@
             }
         };
         
-        // --- NEW Category Management Functions ---
+        // --- NEW Function: Edit Stage Count ---
+        const editStageCount = async () => {
+            if (!currentRaceId) return;
+
+            const confirmation = prompt(
+                "DANGER: You are about to change the total number of stages. \n\n" +
+                "Reducing stages will PERMANENTLY delete times for removed stages. \n\n" +
+                "To proceed, type 'UPDATE STAGES'"
+            );
+            if (confirmation !== 'UPDATE STAGES') {
+                return showMessage('Action cancelled.', true);
+            }
+            
+            const newCountStr = prompt("Enter the NEW total number of stages:", raceData.stages);
+            const newStageCount = parseInt(newCountStr, 10);
+            
+            if (isNaN(newStageCount) || newStageCount <= 0 || newStageCount > 20) {
+                 return showMessage('Invalid number. Please enter a number between 1 and 20.', true);
+            }
+            
+            if (newStageCount === raceData.stages) {
+                return showMessage('No change in stage count.', true);
+            }
+            
+            const oldStageCount = raceData.stages;
+            
+            // Update all riders' times arrays
+            const updatedRiders = raceData.riders.map(rider => {
+                let newTimes;
+                if (newStageCount > oldStageCount) {
+                    // Add 'null' for new stages
+                    const padding = Array(newStageCount - oldStageCount).fill(null);
+                    newTimes = [...rider.times, ...padding];
+                } else {
+                    // Truncate (slice) times array - this is destructive!
+                    newTimes = rider.times.slice(0, newStageCount);
+                }
+                
+                // Recalculate total time based on new array
+                const hasDnfStage = newTimes.some(time => time === 'DNF');
+                let newTotalTime = null;
+                let newStatus = hasDnfStage ? 'DNF' : 'active';
+                
+                if (newStatus === 'active' && newTimes.every(time => typeof time === 'number')) {
+                    newTotalTime = newTimes.reduce((sum, time) => sum + time, 0);
+                } else if (newStatus === 'DNF') {
+                     newTotalTime = null;
+                }
+                
+                return {
+                    ...rider,
+                    times: newTimes,
+                    totalTime: newTotalTime,
+                    status: newStatus
+                };
+            });
+            
+            // Update Firestore
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'enduro-timer-default';
+            const raceDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'races', currentRaceId);
+            
+            try {
+                await updateDoc(raceDocRef, {
+                    stages: newStageCount,
+                    riders: updatedRiders
+                });
+                showMessage(`Race stages updated to ${newStageCount}.`);
+            } catch (error) {
+                showMessage('Failed to update stage count.', true);
+                console.error("Error updating stage count: ", error);
+            }
+        };
         
         const addCategory = async () => {
             const newCategory = categoryNameInput.value.trim();
@@ -533,12 +609,12 @@
                 text.textContent = category;
                 
                 const editBtn = document.createElement('button');
-                editBtn.innerHTML = '&#9998;'; // Pencil icon
+                editBtn.innerHTML = '&#9998;'; 
                 editBtn.className = 'hover:text-yellow-500';
                 editBtn.onclick = () => editCategory(category);
                 
                 const delBtn = document.createElement('button');
-                delBtn.innerHTML = '&times;'; // 'X' icon
+                delBtn.innerHTML = '&times;'; 
                 delBtn.className = 'hover:text-red-500';
                 delBtn.onclick = () => deleteCategory(category);
                 
@@ -548,8 +624,6 @@
                 categoryListContainer.appendChild(pill);
             });
         };
-        
-        // --- END Category Management Functions ---
 
         const setRiderDnf = async (riderNumber, stageIndexToSet) => {
             const riderIndex = raceData.riders.findIndex(r => r.number === riderNumber);
@@ -688,11 +762,11 @@
                 resultsTableBody.appendChild(row);
             });
             
-            riderCountDisplay.textContent = `Riders: ${raceData.riders.length}/${MAX_RIDERS}`; // --- UPDATED LIMIT ---
+            riderCountDisplay.textContent = `Riders: ${raceData.riders.length}/${MAX_RIDERS}`;
             renderStageHeaders();
             renderStageSpecificResults();
-            renderCategories(); // --- New call
-            populateCategoryDropdowns(); // --- New call
+            renderCategories(); 
+            populateCategoryDropdowns();
         };
 
         const renderStageHeaders = () => {
@@ -740,10 +814,12 @@
 
         const showStageSelection = () => {
             timingStationSelect.innerHTML = '<option value="">Select Stage</option>';
-            for (let i = 0; i < raceData.stages; i++) {
-                const option = document.createElement('option');
-                option.value = i; option.textContent = `Stage ${i + 1}`;
-                timingStationSelect.appendChild(option);
+            if (raceData && raceData.stages) { // Check if raceData is loaded
+                for (let i = 0; i < raceData.stages; i++) {
+                    const option = document.createElement('option');
+                    option.value = i; option.textContent = `Stage ${i + 1}`;
+                    timingStationSelect.appendChild(option);
+                }
             }
             stageSelectionContainer.classList.remove('hidden');
             timingStationActive.classList.add('hidden');
@@ -852,11 +928,11 @@
             raceIdInput = document.getElementById('raceIdInput'); loadRaceBtn = document.getElementById('loadRaceBtn'); newRaceBtn = document.getElementById('newRaceBtn'); raceInfoDiv = document.getElementById('raceInfo'); raceTimerContainer = document.getElementById('raceTimerContainer'); riderForm = document.getElementById('riderForm'); ridersTableBody = document.getElementById('ridersTableBody'); resultsTableBody = document.getElementById('resultsTableBody'); riderCountDisplay = document.getElementById('riderCountDisplay'); startTimerBtn = document.getElementById('startTimerBtn'); timingRiderInput = document.getElementById('timingRiderInput'); messageBox = document.getElementById('messageBox'); activeTimersList = document.getElementById('activeTimersList'); stageCountInput = document.getElementById('stageCountInput'); exportCsvBtn = document.getElementById('exportCsvBtn'); stageSelectionContainer = document.getElementById('stageSelectionContainer'); timingStationSelect = document.getElementById('timingStationSelect'); startTimingStationBtn = document.getElementById('startTimingStationBtn'); timingStationActive = document.getElementById('timingStationActive'); timingStationHeader = document.getElementById('timingStationHeader'); switchStageBtn = document.getElementById('switchStageBtn'); stageStandingsHeader = document.getElementById('stageStandingsHeader'); stageStandingsBody = document.getElementById('stageStandingsBody'); riderCsvInput = document.getElementById('riderCsvInput'); processCsvBtn = document.getElementById('processCsvBtn'); toggleViewBtn = document.getElementById('toggleViewBtn');
             raceNameInput = document.getElementById('raceNameInput');
             currentRaceNameDisplay = document.getElementById('currentRaceNameDisplay');
-            // --- Assign New Category DOM Elements ---
             categoryNameInput = document.getElementById('categoryNameInput');
             addCategoryBtn = document.getElementById('addCategoryBtn');
             categoryListContainer = document.getElementById('categoryListContainer');
             riderCategorySelect = document.getElementById('riderCategorySelect');
+            editStageCountBtn = document.getElementById('editStageCountBtn'); // --- Assign New Element ---
 
             stageCountInput.value = 6;
             
@@ -909,7 +985,8 @@
             switchStageBtn.addEventListener('click', switchTimingStage);
             processCsvBtn.addEventListener('click', processCsvUpload);
             toggleViewBtn.addEventListener('click', toggleAdminView);
-            addCategoryBtn.addEventListener('click', addCategory); // --- New listener ---
+            addCategoryBtn.addEventListener('click', addCategory); 
+            editStageCountBtn.addEventListener('click', editStageCount); // --- Add New Listener ---
 
             ridersTableBody.addEventListener('click', (event) => {
                 const target = event.target.closest('button');
@@ -1025,6 +1102,7 @@
                             <p class="text-sm text-gray-500">Loading categories...</p>
                         </div>
                     </div>
+                    
                     <div class="p-4 mb-4 bg-gray-50 border rounded-lg">
                         <h3 class="font-semibold text-gray-700 mb-2">Bulk Upload Riders</h3>
                         <p class="text-xs text-gray-500 mb-3">Upload a CSV file with columns: <strong>Number,Name,Category</strong>. The first row should be headers.</p>
@@ -1044,7 +1122,15 @@
                         <button type="submit" class="button w-full sm:w-auto px-6 py-2 bg-emerald-600 text-white font-bold rounded-md shadow-md hover:bg-emerald-700">Add Rider</button>
                     </form>
                  </div>
-            </div>
+                 
+                 <div class="card p-6 bg-red-50 border-red-200 border">
+                    <h2 class="text-2xl font-bold text-red-800">Race Settings (Danger Zone)</h2>
+                    <p class="text-sm text-red-600 mt-2 mb-4">Warning: Actions in this section can be destructive and may result in data loss. Proceed with caution.</p>
+                    <button id="editStageCountBtn" class="button px-4 py-2 bg-red-600 text-white font-bold text-sm rounded-md shadow-md hover:bg-red-700">
+                        Change Number of Stages
+                    </button>
+                 </div>
+                 </div>
 
             <div id="dataTab" class="tab-content hidden space-y-8">
                  <div class="card p-0 overflow-hidden">
